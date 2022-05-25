@@ -1,0 +1,106 @@
+---
+title: "Nips Plot"
+author: "anonymous"
+output: pdf_document
+---
+# library
+```{r}
+library(ggplot2)
+library(ggrepel)
+library(viridis)
+library(readr)
+library(readxl)
+```
+
+# data
+```{r}
+cluster22 <- read_excel("realData.xlsx", sheet = "cluster") #"cluster_sqrt(n)"
+non_cluster22 <- read_excel("realData.xlsx", sheet = "noncluster") #"cluster_sqrt(n)"
+typeof(cluster22) 
+```
+
+# Plot
+```{r}
+n=200
+w=c("0", "1/n", "1/n^2","3/n^2","5/n^2","10/n^2", "1/2n", "1/n", "2/n", "1")
+w=c(0, 1/n^3, 1/n^2,2/n^2, 3/n^2, 5/n^2, 10/n^2, 20/n^2, 1/n, 0.1, 1) #2*2
+l_weight=length(w)
+
+non_cluster_22_MSE_old=non_cluster22[12,3:(3+l_weight-1)] #[9, 3:(3+l_weight-1)]
+non_cluster_22_network_old=non_cluster22[1,3:(3+l_weight-1)]
+non_cluster_22_overall_old=non_cluster22[2,3:(3+l_weight-1)]
+non_cluster_22_margin1x_old=non_cluster22[3,3:(3+l_weight-1)]
+non_cluster_22_stratum11_old=non_cluster22[5,3:(3+l_weight-1)]
+
+non_cluster_22_MSE_new=non_cluster22[26,3:(3+l_weight-1)]
+non_cluster_22_network_new=non_cluster22[11,3:(3+l_weight-1)]
+non_cluster_22_overall_new=non_cluster22[12,3:(3+l_weight-1)]
+non_cluster_22_margin1x_new=non_cluster22[13,3:(3+l_weight-1)]
+non_cluster_22_stratum11_new=non_cluster22[15,3:(3+l_weight-1)]
+
+cluster_22_MSE_old=cluster22[12,3:(3+l_weight-1)]
+cluster_22_network_old=cluster22[1,3:(3+l_weight-1)]
+cluster_22_overall_old=cluster22[2,3:(3+l_weight-1)]
+cluster_22_margin1x_old=cluster22[3,3:(3+l_weight-1)]
+cluster_22_stratum11_old=cluster22[5,3:(3+l_weight-1)]
+
+cluster_22_MSE_new=cluster22[26,3:(3+l_weight-1)]
+cluster_22_network_new=cluster22[11,3:(3+l_weight-1)]
+cluster_22_overall_new=cluster22[12,3:(3+l_weight-1)]
+cluster_22_margin1x_new=cluster22[13,3:(3+l_weight-1)]
+cluster_22_stratum11_new=cluster22[15,3:(3+l_weight-1)]
+```
+
+```{r}
+#(mse, network, overall, margi1x, stratum11, CR, new, cluster)
+data=cbind(
+      c(non_cluster_22_MSE_old, non_cluster_22_MSE_new, cluster_22_MSE_old, cluster_22_MSE_new),
+      c(non_cluster_22_network_old, non_cluster_22_network_new, cluster_22_network_old, cluster_22_network_new),
+      c(non_cluster_22_overall_old, non_cluster_22_overall_new, cluster_22_overall_old, cluster_22_overall_new),
+      c(non_cluster_22_margin1x_old, non_cluster_22_margin1x_new, cluster_22_margin1x_old, cluster_22_margin1x_new),
+      c(non_cluster_22_stratum11_old, non_cluster_22_stratum11_new, cluster_22_stratum11_old, cluster_22_stratum11_new),
+      c(rep("AL/CR in YY",l_weight),
+        rep("AL*/CR in YY",l_weight),
+        rep("AL/CR in DK",l_weight),
+        rep("AL*/CR in DK",l_weight)))
+data1=as.data.frame(data)
+colnames(data1)<-c('mse', 'network', 'overall', 'margi1x', 'stratum11', 'category')
+```
+
+```{r}
+#w2=as.factor(w)
+w2=w
+data2=rbind(cbind(data1$mse, "mse", data1$category, w2))
+data2=as.data.frame(data2)
+colnames(data2)<-c('Adaptive', 'measure', 'category','weight')
+data2$weight=factor(unlist(data2$weight), 
+                       labels=c("0", "1/n^3", "1/n^2","2/n^2","3/n^2","5/n^2","10/n^2", "20/n^2", "1/n", "0.1", "1"))
+```
+
+```{r}
+data2$Adaptive=as.numeric(data2$Adaptive)
+data2$category=as.factor(unlist(data2$category))
+data2$measure=as.factor(unlist(data2$measure))
+```
+
+```{r}
+CR=c(rep(as.numeric(non_cluster22[12,2]),l_weight),
+      rep(as.numeric(non_cluster22[26,2]),l_weight),
+      rep(as.numeric(cluster22[12,2]),l_weight),
+      rep(as.numeric(cluster22[26,2]),l_weight))
+
+line_graph_color<-c("AL/CR in YY"="#00008B", "AL*/CR in YY"="#00008B", "AL/CR in DK"="#F08080", "AL*/CR in DK"="#F08080")
+method_line_color<-c("AL/CR in YY"="solid", "AL*/CR in YY"="longdash", "AL/CR in DK"="solid", "AL*/CR in DK"="longdash")
+method_point_color<-c("AL/CR in YY"=1, "AL*/CR in YY"=6, "AL/CR in DK"=1, "AL*/CR in DK"=6)
+
+ggplot(data = data2[data2$measure=='mse', ], mapping = aes(x = weight, y = 1-Adaptive/CR, group=category,color=category)) +
+  geom_point(aes(shape=category))+
+  scale_shape_manual(values=method_point_color)+ #1(o)-AL; 6(triangle)-AL*
+  geom_line(aes(linetype=category), size=0.5)+
+  scale_color_manual(values=line_graph_color)+ # "#00008B"-YY; "#F08080"-DK
+  scale_linetype_manual(values=method_line_color) + #solid-AL; longdash-AL*
+  #ylim(0.2, 0.75)+
+  scale_y_continuous(limits = c(0.25, 0.7), breaks = seq(0.3, 0.7, by = 0.1))+
+  labs(x="weight",y="mse reduction")+
+  theme(legend.position = c(0.01,0.05),  legend.justification = c("left", "bottom"), legend.direction="horizontal", panel.background = element_rect(fill = "white", colour = "grey50"),legend.title = element_blank(), legend.text = element_text(colour="black", size=14, face="bold"), axis.title=element_text(size=16,face="bold"))
+```

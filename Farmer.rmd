@@ -1,0 +1,378 @@
+---
+title: "CRG_CARstratum3+20"
+author: "anonymous"
+output: pdf_document
+---
+# libraries
+```{r}
+library(igraph)
+library(data.table)
+library(reshape2)
+library(dplyr)
+library(matrixStats)
+```
+
+# import data(cov and adjcent data frame) AND prepare covariate data
+```{r}
+##import data##
+#df_adj_yazhou_yongfeng <- read.csv("~/df_adj_address_dukou.csv")
+df_adj_yazhou_yongfeng <- read.csv("~/df_adj_yazhou_yongfeng.csv")
+
+#df_allinfor_yazhou_yongfeng <- read.csv("~/df_allinfor_address_dukou.csv")
+df_allinfor_yazhou_yongfeng <- read.csv("~/df_allinfor_yazhou_yongfeng.csv")
+
+##prepare covariate data##
+
+num_cov=5 # number of 0-1 covariates
+          # 0-1:insurance_repay, insurance_buy, general_trust,default,disaster_yes
+num_cov_level=4 # (0,1,2,3): education level, another non 0-1 covariate,
+                # yazhou_yongfeng data has no college framers, i.e. no educ=4.
+df_allinfor_yazhou_yongfeng[,'educ']=df_allinfor_yazhou_yongfeng[,'educ']+1 #add 1 to all educ for further design 
+df_allinfor_yazhou_yongfeng[is.na(df_allinfor_yazhou_yongfeng$disaster_yes), 'disaster_yes'] <- 0
+n=dim(df_allinfor_yazhou_yongfeng)[1] #n=dim(AdjMatrix_yazhou_yongfeng)[1]
+```
+
+# prepare network data
+```{r}
+g_yazhou_yongfeng <- graph_from_data_frame(df_adj_yazhou_yongfeng,directed = FALSE) #if use False, will produce 2 in graph
+AdjMatrix_yazhou_yongfeng=as_adjacency_matrix(g_yazhou_yongfeng, type = "both") # Do NOT convert S4 to matrix format!!!
+#convert al non 0/1 values to 1
+for (i in c(1:n)) {
+  for (j in c(1:n)) {
+    
+    if(AdjMatrix_yazhou_yongfeng[i,j]!=0 & AdjMatrix_yazhou_yongfeng[i,j]!=1){
+      AdjMatrix_yazhou_yongfeng[i,j]=1
+    }
+  }
+}
+
+print(AdjMatrix_yazhou_yongfeng) #226*226
+print(sum(AdjMatrix_yazhou_yongfeng)/(nrow(AdjMatrix_yazhou_yongfeng)*nrow(AdjMatrix_yazhou_yongfeng)))
+ 
+```
+
+# randomization algorithm setup
+```{r}
+N=1000 #repeat time
+q=0.9 # Adaptive randomization assignment probability
+
+w=1/n^3
+
+w_o=0.1  
+w_s=0.4   
+w_m=(1-w_o-w_s)
+
+r=0.5 #Power of Ad*T
+flag_imb=1
+imbm=function(i,flag) {
+  if (flag==1){
+    return(sum(((1/i)*(1-2*t[1:i])%*%Ad[1:i,1:i]*t[1:i])^2))
+  }else if(flag==r){
+    return(sum(((1/i)*(1-2*t[1:i])%*%(Ad[1:i,1:i]%*%t[1:i])^r)^2))
+  }else{
+    return(sum(((1/i)*(1-2*t[1:i])%*%Ad[1:i,1:i])^2))
+  }
+}
+```
+
+# define true model parameter via glm estmates
+```{r}
+mu1=-5 # Treatment effect
+mu0=-5 #baseline, when there is no control
+
+gamma_X1=0.36 #estimated binary cov coefficients
+gamma_X2=0.12 #estimated binary cov coefficients
+gamma_X3=0.33 #estimated binary cov coefficients
+gamma_X4=0.47 #estimated binary cov coefficients
+gamma_X5=0.23 #estimated binary cov coefficients
+gamma_X6=0.43 #estimated discrete cov coefficients
+
+gamma_T=2
+Error_sd=1
+```
+
+# randomization algorithm start
+```{r}
+
+  ABS_MARGIN1=NULL
+  ABS_MARGIN0=NULL
+  ABS_MARGIN_location=NULL
+  
+  ABS_OVERALL=NULL
+  
+  ct_stratum2=NULL
+  ct_stratum20=NULL
+  ct_stratum22=NULL
+  
+  ct_stratum3=NULL
+  ct_stratum31=NULL
+  ct_stratum33=NULL
+  
+  ct_stratum4=NULL
+  ct_stratum40=NULL
+  ct_stratum42=NULL
+  ct_stratum44=NULL
+  
+  ct_stratum5=NULL
+  ct_stratum51=NULL
+  ct_stratum53=NULL
+  ct_stratum55=NULL
+  
+  SD_NET=NULL
+  
+  Beta_G=NULL
+  
+for (k in 1:N) {
+  #assign network
+  Ad=AdjMatrix_yazhou_yongfeng
+  #prepare cov data
+  ddd=df_allinfor_yazhou_yongfeng[,c('insurance_repay', 'insurance_buy', 'general_trust','default','disaster_yes','educ')]
+  #create matrix with dim (4*2^5 strata)*(6+value) 
+  DDD=melt(table(df_allinfor_yazhou_yongfeng[,c('insurance_repay', 'insurance_buy', 'general_trust','default','disaster_yes','educ')])) #the value of ith row= the # of the stratum of ith unit belongs to in all n units   
+  DDD$index=1:(nrow(DDD)) #index of each stratum
+  DDD$StratumImb=0 
+  #Join DDD to ddd, thus every people in ddd know which index(stratum) it belongs to, #people in it, its corresponding imbalance 
+  ddd=left_join(ddd, DDD, by = names(ddd)[1:(num_cov+1)]) #5 binary +1 educ cov
+  #DDD=160*(4+value+index+stratumImb) matrix
+  
+  ## prepare information storage ##
+  t=NULL
+  t[1]=rbinom(1,1,0.5)
+  
+  M1_store=rep(0,num_cov)
+  M2_store=rep(0,num_cov)
+  Mlocation_store=rep(0,num_cov_level)
+
+
+  Mo_store=2*t[1]-1  
+  #update marginal imbalance of 1st unit's all covaiates 
+  M1_store[ddd[1,1:num_cov]==1]=M1_store[ddd[1,1:num_cov]==1]+2*t[1]-1 
+  M2_store[ddd[1,1:num_cov]==0]=M2_store[ddd[1,1:num_cov]==0]+2*t[1]-1
+  Mlocation_store[ddd[1,(num_cov+1)]]=Mlocation_store[ddd[1,(num_cov+1)]]+2*t[1]-1
+  #update stratum imbalance of 1st unit's all covaiates 
+  DDD[ddd[1,"index"],"StratumImb"]= 2*t[1]-1
+   
+  ## start design ##
+  abs_overall=0
+  
+  im_net=0
+  
+    for (i in 2:n) {
+      
+      t[i]=1
+      m1_temp=M1_store[ddd[i,1:num_cov]==1]
+      m2_temp=M2_store[ddd[i,1:num_cov]==0]
+      Mlocation_temp=Mlocation_store[ddd[i,(num_cov+1)]]
+      Mo_temp=Mo_store+1
+      mstratum_temp=DDD[ddd[i,"index"],"StratumImb"]+1
+      #imb_net_1=sum(((1/i)*Ad[1:i,1:i]%*%(1-2*t[1:i]))^2) #imb_net=Im^2/n^2, Im converges with speed n^2
+      imb_net_1=imbm(i,flag_imb)
+      im1=w*(w_o*Mo_temp^2+w_m*(sum((m1_temp+1)^2)+sum((m2_temp+1)^2)+(Mlocation_temp+1)^2)+w_s*(mstratum_temp)^2)+(1-w)*imb_net_1
+      
+      t[i]=0
+      m1_temp=M1_store[ddd[i,1:num_cov]==1]
+      m2_temp=M2_store[ddd[i,1:num_cov]==0]
+      Mlocation_temp=Mlocation_store[ddd[i,(num_cov+1)]]
+      Mo_temp=Mo_store-1
+      mstratum_temp=DDD[ddd[i,"index"],"StratumImb"]-1
+      #imb_net_2=sum(((1/i)*Ad[1:i,1:i]%*%(1-2*t[1:i]))^2) #imb_net=Im^2/n^2, Im converges with speed n^2
+      imb_net_2=imbm(i,flag_imb)
+      im2=w*(w_o*Mo_temp^2+w_m*(sum((m1_temp-1)^2)+sum((m2_temp-1)^2)+(Mlocation_temp-1)^2)+w_s*(mstratum_temp)^2)+(1-w)*imb_net_2
+      
+if(im1-im2>-10 & im1-im2<0){
+  t[i]=rbinom(1,1,q)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mlocation_store[ddd[i,(num_cov+1)]]=Mlocation_store[ddd[i,(num_cov+1)]]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  #im_net[i]=sum(((1/i)*Ad[1:i,1:i]%*%(1-2*t[1:i]))^2)
+  im_net[i]=imbm(i,flag_imb)
+}
+
+else if(im1-im2<10 & im1-im2>0){
+  t[i]=rbinom(1,1,1-q)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mlocation_store[ddd[i,(num_cov+1)]]=Mlocation_store[ddd[i,(num_cov+1)]]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  #im_net[i]=sum(((1/i)*Ad[1:i,1:i]%*%(1-2*t[1:i]))^2)
+  im_net[i]=imbm(i,flag_imb)
+}
+else if(im1-im2>=10){
+  qnew=ifelse(q==0.5, 0.5, 10/abs(im1-im2)^(2.1))
+  #qnew=10/abs(im1-im2)^(2.1) 
+  t[i]=rbinom(1,1,qnew)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mlocation_store[ddd[i,(num_cov+1)]]=Mlocation_store[ddd[i,(num_cov+1)]]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  #im_net[i]=sum(((1/i)*Ad[1:i,1:i]%*%(1-2*t[1:i]))^2)
+  im_net[i]=imbm(i,flag_imb)
+}
+else if(im1-im2<=-10){
+  qnew=ifelse(q==0.5, 0.5, 10/abs(im1-im2)^(2.1))
+  #qnew=10/abs(im1-im2)^(2.1) 
+  t[i]=rbinom(1,1,1-qnew)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mlocation_store[ddd[i,(num_cov+1)]]=Mlocation_store[ddd[i,(num_cov+1)]]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  #im_net[i]=sum(((1/i)*Ad[1:i,1:i]%*%(1-2*t[1:i]))^2)
+  im_net[i]=imbm(i,flag_imb)
+}
+else{
+t[i]=rbinom(1,1,0.5)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mlocation_store[ddd[i,(num_cov+1)]]=Mlocation_store[ddd[i,(num_cov+1)]]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  #im_net[i]=sum(((1/i)*Ad[1:i,1:i]%*%(1-2*t[1:i]))^2)
+  im_net[i]=imbm(i,flag_imb)
+}
+  abs_margin1=abs(M1_store) #abs of levels=1 margins
+  abs_margin0=abs(M2_store) #abs of levels=0 margins
+  abs_margin_location=abs(Mlocation_store) #abs of 4 educ (illiteracy, primary,secondary, high school) 
+  
+  abs_overall[i]=abs(Mo_store)
+  
+  
+  } #end n
+  
+  ##store design imbalance ##
+  ABS_MARGIN1=cbind(ABS_MARGIN1,abs_margin1)#row is n 
+  ABS_MARGIN0=cbind(ABS_MARGIN0,abs_margin0)
+  ABS_MARGIN_location=cbind(ABS_MARGIN_location,abs_margin_location)
+  ABS_OVERALL=cbind(ABS_OVERALL,abs_overall)
+  
+  
+  ct_stratum2[k]=sum(DDD$value==2) 
+  # count stratum value=2
+  ct_stratum20[k]=sum(DDD$value==2 & DDD$StratumImb==0)/sum(DDD$value==2) 
+  # count stratum value=2 and |diff|=0
+  ct_stratum22[k]=sum(DDD$value==2 & abs(DDD$StratumImb)==2)/sum(DDD$value==2) 
+  
+  ct_stratum3[k]=sum(DDD$value==3)
+  ct_stratum31[k]=sum(DDD$value==3 & abs(DDD$StratumImb)==1)/sum(DDD$value==3) 
+  ct_stratum33[k]=sum(DDD$value==3 & abs(DDD$StratumImb)==3)/sum(DDD$value==3) 
+  
+  ct_stratum4[k]=sum(DDD$value==4)
+  ct_stratum40[k]=sum(DDD$value==4 & abs(DDD$StratumImb)==0)/sum(DDD$value==4) 
+  ct_stratum42[k]=sum(DDD$value==4 & abs(DDD$StratumImb)==2)/sum(DDD$value==4) 
+  ct_stratum44[k]=sum(DDD$value==4 & abs(DDD$StratumImb)==4)/sum(DDD$value==4) 
+  
+   ct_stratum5[k]=sum(DDD$value==5)
+  ct_stratum51[k]=sum(DDD$value==5 & abs(DDD$StratumImb)==1)/sum(DDD$value==5) 
+  ct_stratum53[k]=sum(DDD$value==5 & abs(DDD$StratumImb)==3)/sum(DDD$value==5) 
+  ct_stratum55[k]=sum(DDD$value==5 & abs(DDD$StratumImb)==5)/sum(DDD$value==5) 
+  
+  #SD_NET=cbind(SD_NET,sqrt(im_net)) #row=1..n
+  SD_NET=cbind(SD_NET,im_net)
+  
+  ##generate response y ##
+  Err=rnorm(n,0,Error_sd)
+  ResponseY=mu0+(mu1-mu0)*t+gamma_T*(Ad%*%t)^r+
+    gamma_X1*df_allinfor_yazhou_yongfeng$insurance_repay+
+    gamma_X2*df_allinfor_yazhou_yongfeng$insurance_buy+
+    gamma_X3*df_allinfor_yazhou_yongfeng$general_trust+
+    gamma_X4*df_allinfor_yazhou_yongfeng$default+
+    gamma_X5*df_allinfor_yazhou_yongfeng$disaster_yes+
+    gamma_X6*df_allinfor_yazhou_yongfeng$educ
+    +Err
+  probY=as.vector(exp(ResponseY-Err)/(1+exp(ResponseY-Err)))  
+  YY=rbinom(n,1,probY)
+  
+  Beta_G[k]=(mean(YY[t==1])/mean(YY[t==0]))/(length(YY[t==1])/length(YY[t==0]))
+  #Beta_G[k]=mean(ResponseY[t==1])-mean(ResponseY[t==0])
+  
+  if (k%%100==0) print(k)
+}#end N
+```
+
+# calculate imbalance measures
+```{r}
+m_ABS_MARGIN1=rowMeans(ABS_MARGIN1)
+m_ABS_MARGIN0=rowMeans(ABS_MARGIN0)
+m_ABS_MARGIN_location=rowMeans(ABS_MARGIN_location)
+m_ABS_OVERALL=rowMeans(ABS_OVERALL)
+
+sd_ABS_MARGIN1=rowSds(ABS_MARGIN1)
+sd_ABS_MARGIN0=rowSds(ABS_MARGIN0)
+sd_ABS_MARGIN_location=rowSds(ABS_MARGIN_location)
+sd_ABS_OVERALL=rowSds(ABS_OVERALL)
+
+  m_ABS_stratum2=mean(ct_stratum2,na.rm=T)
+  m_ABS_stratum20=mean(ct_stratum20,na.rm=T)
+  m_ABS_stratum22=mean(ct_stratum22,na.rm=T)
+  
+  m_ABS_stratum3=mean(ct_stratum3,na.rm=T)
+  m_ABS_stratum31=mean(ct_stratum31,na.rm=T)
+  m_ABS_stratum33=mean(ct_stratum33,na.rm=T)
+  
+  m_ABS_stratum4=mean(ct_stratum4,na.rm=T)
+  m_ABS_stratum40=mean(ct_stratum40,na.rm=T)
+  m_ABS_stratum42=mean(ct_stratum42,na.rm=T)
+  m_ABS_stratum44=mean(ct_stratum44,na.rm=T)
+  
+  m_ABS_stratum5=mean(ct_stratum5,na.rm=T)
+  m_ABS_stratum51=mean(ct_stratum51,na.rm=T)
+  m_ABS_stratum53=mean(ct_stratum53,na.rm=T)
+  m_ABS_stratum55=mean(ct_stratum55,na.rm=T)
+
+  m_SD_NET=rowMeans(SD_NET)
+```
+
+```{r}
+  m_ABS_stratum2/(num_cov_level*(2^num_cov))
+  m_ABS_stratum20
+  m_ABS_stratum22
+
+  m_ABS_stratum3/(num_cov_level*(2^num_cov))
+  m_ABS_stratum31
+  m_ABS_stratum33
+  
+  m_ABS_stratum4/(num_cov_level*(2^num_cov))
+  m_ABS_stratum40
+  m_ABS_stratum42
+  m_ABS_stratum44
+  
+  m_ABS_stratum5/(num_cov_level*(2^num_cov))
+  m_ABS_stratum51
+  m_ABS_stratum53
+  m_ABS_stratum55
+
+m_ABS_MARGIN1
+m_ABS_MARGIN0
+m_ABS_MARGIN_location
+
+sd_ABS_MARGIN1
+sd_ABS_MARGIN0
+sd_ABS_MARGIN_location
+```
+
+# output bias, standard deviation(sd), mes, network imbalance measures, and covariate imbalance measures
+```{r}
+#cov imbalance
+m_ABS_stratum20 #stratum cov imbalance
+m_ABS_stratum31
+m_ABS_stratum40
+m_ABS_stratum42
+m_ABS_stratum51
+m_ABS_stratum53
+mean(c(m_ABS_MARGIN1,m_ABS_MARGIN0,m_ABS_MARGIN_location)) #margin imbalance
+m_ABS_OVERALL[n] #overall cov imbalance
+
+#network imbalance 
+m_SD_NET[n]
+
+#estimation
+Bia_CAR=mean(Beta_G)-exp(mu1-mu0)
+sd_CAR=sd(Beta_G)
+Bia_CAR
+sd_CAR
+Bia_CAR^2+var(Beta_G)
+```

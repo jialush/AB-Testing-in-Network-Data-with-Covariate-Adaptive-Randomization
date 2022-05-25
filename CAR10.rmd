@@ -1,0 +1,304 @@
+---
+title: "CRG_CARstratum2^10"
+author: "anonymous"
+output: pdf_document
+---
+# Basic Setup
+```{r}
+library(igraph)
+library(data.table)
+library(reshape2)
+library(dplyr)
+library(matrixStats)
+```
+
+# Basic Setting
+```{r}
+n=200 #100 200 500
+
+num_cov=10
+
+#CRG density
+p_dense=0.05 #between probability of any two units in a network.
+
+#Define unobserved cov
+
+#prior 
+beta_alpha=1
+beta_beta=50 
+U_b=1 #control the influence from neighbor
+b_prior=0.1 #0.1(0.01) #10(0.2) #control the shape (e.g. clustering) of the network
+        # control the dense of generated network #the smaller the more separate
+
+
+pa=0 #lower bound when continuous unobserved has largest distance
+pb=0.1 #average become friend probability
+KnownCov=FALSE
+CRGraph=F # whether run design on complete random graph
+Z_sd=0.1
+```
+
+# Function: generate X covariate 
+```{r}
+generate_cov<-function(i){
+  dd=NULL
+  for (j in 1:i) {
+  d=rbinom(n,1,c(0.5))
+  dd=cbind(dd,d) #d[,i] is vector of ith covariate
+  }
+  return(dd)
+}
+```
+
+# Link determine function
+```{r}
+#determine connected probability between i and j
+determine<-function(a,b,covIndex, ranii,ranjj){
+   #the closer a and b, the smaller return
+  return(   
+    min(covIndex*(ranii*ranjj*pb*(1-((a-b)/(2*U_b))^2)^2+pa), 1)
+    )
+}
+```
+
+# Generate whole network
+```{r}
+generate_adjacent2<-function(UU,CovMatrix){
+  adj=matrix(rep.int(0, n*n), n, n)
+  ran=rep(1,n)
+  for (i in c(1:n)){
+    for (j in c(i:n)) {
+      
+      num_same_cov=sum(CovMatrix[i,]==CovMatrix[j,])
+      covInput=num_same_cov/num_cov
+  
+      covInput=ifelse(KnownCov, covInput, 1)
+      I_p=rbinom(1,1,determine(UU[i],UU[j],covInput, ran[i], ran[j]))
+      adj[i,j]=I_p
+      adj[j,i]=I_p
+
+    }
+  }
+  
+  return(adj)
+  }
+```
+
+# Randomization algorithm setting
+```{r}
+N=1000 #repeat
+
+#define observed cov
+
+# design setting
+q=0.9 #CAR assignment probability 
+
+w=0 #w=400/(n^2)
+w_o=0.1
+w_s=0.5 #0.5
+w_m=(1-w_o-w_s)/num_cov
+
+#define true model parameter
+mu1=0 # Treatment effect
+mu0=1 #baseline, when there is no control
+
+gamma_X1=1 
+gamma_X2=1 
+gamma_X3=1 
+gamma_X4=1 
+gamma_X5=1 
+gamma_X6=4 
+gamma_X7=4 
+gamma_X8=4 
+gamma_X9=4 
+gamma_X10=4 
+
+Error_sd=1
+
+flag_imb=13 # 1== new method; !=1 is old method
+imbm=function(i,flag) {
+  if (flag==1){
+    return(sum(((1/i)*(1-2*t[1:i])%*%Ad[1:i,1:i]*t[1:i])^2))
+  }else{
+    return(sum(((1/i)*(1-2*t[1:i])%*%Ad[1:i,1:i])^2))
+  }
+}
+```
+
+# Randomization algorithm start
+```{r}
+
+  ABS_MARGIN=NULL
+  ABS_MARGIN2=NULL
+  ABS_OVERALL=NULL
+  ABS_STRATUM2=NULL
+  ABS_STRATUM3=NULL
+  SD_NET=NULL
+  
+  Beta_G=NULL
+  
+for (k in 1:N) {
+  
+  ddd=generate_cov(num_cov) #n*num_cov matrix
+  
+  #create network based on both known and unknown covariates 
+  U=2*(rbeta(n,b_prior,b_prior)-0.5)*U_b #generate unobserved cov
+  
+  if(CRGraph){
+    Network=erdos.renyi.game(n, p_dense, type = "gnp", directed = FALSE,loops = TRUE)
+    Ad=as_adjacency_matrix(Network, type = "both", attr = NULL, edges = FALSE, names = TRUE)
+  }else{
+    Ad=generate_adjacent2(U, ddd)
+  }
+  
+  
+  ddd=as.data.frame(ddd)
+  names(ddd) <- paste("col",1:num_cov,sep="") #(n+1)*num_cov matrix
+   
+  DDD=reshape2::melt(table(as.data.frame(ddd)))# 2^10 *(10+value+index+stratumImb)
+  DDD$index=1:(nrow(DDD))
+  DDD$StratumImb=0 
+  ddd=left_join(ddd, DDD, by = names(ddd)[1:num_cov]) #new ddd
+  
+  ##start Algorithm##
+  t=NULL
+  t[1]=rbinom(1,1,0.5)
+  
+  M1_store=rep(0,num_cov)
+  M2_store=rep(0,num_cov)
+  
+  
+  Mo_store=2*t[1]-1  
+  M1_store[ddd[1,1:num_cov]==1]=M1_store[ddd[1,1:num_cov]==1]+2*t[1]-1 #margin of 1st unit's all covaiates with value 1 
+  M2_store[ddd[1,1:num_cov]==0]=M2_store[ddd[1,1:num_cov]==0]+2*t[1]-1
+  DDD[ddd[1,"index"],"StratumImb"]= 2*t[1]-1
+   
+  
+  abs_margin=0
+  abs_margin2=0
+  abs_overall=0
+  abs_stratum2=0
+  abs_stratum3=0 
+  im_net=0
+  
+    for (i in 2:n) {
+      
+      t[i]=1
+      m1_temp=M1_store[ddd[i,1:num_cov]==1]
+      m2_temp=M2_store[ddd[i,1:num_cov]==0]
+      Mo_temp=Mo_store+1
+      mstratum_temp=DDD[ddd[i,"index"],"StratumImb"]+1
+      imb_net_1=imbm(i,flag_imb) #imb_net=Im^2/n^2, Im converges with speed n^2
+      im1=w*(w_o*Mo_temp^2+w_m*(sum((m1_temp+1)^2)+sum((m2_temp+1)^2))+w_s*(mstratum_temp)^2)+(1-w)*imb_net_1
+      
+      t[i]=0
+      m1_temp=M1_store[ddd[i,1:num_cov]==1]
+      m2_temp=M2_store[ddd[i,1:num_cov]==0]
+      Mo_temp=Mo_store-1
+      mstratum_temp=DDD[ddd[i,"index"],"StratumImb"]-1
+      imb_net_2=imbm(i,flag_imb) #imb_net=Im^2/n^2, Im converges with speed n^2
+      im2=w*(w_o*Mo_temp^2+w_m*(sum((m1_temp-1)^2)+sum((m2_temp-1)^2))+w_s*(mstratum_temp)^2)+(1-w)*imb_net_2
+      
+if(im1-im2>-10 & im1-im2<0){
+  t[i]=rbinom(1,1,q)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  im_net[i]=imbm(i,flag_imb)
+}
+else if(im1-im2<10 & im1-im2>0){
+  t[i]=rbinom(1,1,1-q)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  im_net[i]=imbm(i,flag_imb)
+}
+else if(im1-im2>=10){
+  qnew=ifelse(q==0.5, 0.5, 10/abs(im1-im2)^(2.1))
+  t[i]=rbinom(1,1,qnew)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  im_net[i]=imbm(i,flag_imb)
+}
+else if(im1-im2<=-10){
+  qnew=ifelse(q==0.5, 0.5, 10/abs(im1-im2)^(2.1))
+  t[i]=rbinom(1,1,1-qnew)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  im_net[i]=imbm(i,flag_imb)
+}
+if(im1==im2){
+  t[i]=rbinom(1,1,0.5)
+  M1_store[ddd[i,1:num_cov]==1]=M1_store[ddd[i,1:num_cov]==1]+2*t[i]-1
+  M2_store[ddd[i,1:num_cov]==0]=M2_store[ddd[i,1:num_cov]==0]+2*t[i]-1
+  Mo_store=Mo_store+2*t[i]-1
+  DDD[ddd[i,"index"],"StratumImb"]= DDD[ddd[i,"index"],"StratumImb"]+2*t[i]-1
+  im_net[i]=ifelse(t[i],imb_net_1,imb_net_2)
+}
+      
+      
+  abs_margin[i]=mean(abs(M1_store)+abs(M2_store))/2
+  abs_margin2[i]=sum((M1_store)^2+(M2_store)^2)
+  abs_overall[i]=abs(Mo_store)
+  abs_stratum2[i]=mean(abs(DDD[DDD$value==2,"StratumImb"]))
+  abs_stratum3[i]=mean(abs(DDD[DDD$value==3,"StratumImb"]))
+  
+  } #end n
+  ABS_MARGIN=cbind(ABS_MARGIN,abs_margin)#row is n 
+  ABS_MARGIN2=cbind(ABS_MARGIN2,abs_margin2)
+  ABS_OVERALL=cbind(ABS_OVERALL,abs_overall)
+  
+  ABS_STRATUM2=cbind(ABS_STRATUM2,abs_stratum2)
+  ABS_STRATUM3=cbind(ABS_STRATUM3,abs_stratum3)
+  SD_NET=cbind(SD_NET,sqrt(im_net)) #row=1..n
+  
+  
+  ## generate response y ##
+  Err=rnorm(n,0,Error_sd)
+  ResponseY=mu0+mu1*t+Ad%*%t+as.matrix(ddd[,1:num_cov])%*%c(gamma_X1,gamma_X2,gamma_X3,gamma_X4,gamma_X5,gamma_X6,gamma_X7,gamma_X8,gamma_X9,gamma_X10)+Err
+  
+  Beta_G[k]=mean(ResponseY[t==1])-mean(ResponseY[t==0])
+  
+  
+  if (k%%100==0) print(k)
+}#end N
+```
+
+# Output bias, standard deviation(sd), mes, network imbalance measures, and covariate imbalance measures
+```{r}
+m_ABS_MARGIN0=rowMeans(ABS_MARGIN,na.rm=T)
+m_ABS_OVERALL0=rowMeans(ABS_OVERALL,na.rm=T)
+m_ABS_STRATUM20=rowMeans(ABS_STRATUM2,na.rm=T)
+m_ABS_STRATUM30=rowMeans(ABS_STRATUM3,na.rm=T)
+m_SD_NET0=rowMeans(SD_NET,na.rm=T)
+
+sd_ABS_MARGIN0=rowSds(ABS_MARGIN,na.rm=T)
+sd_ABS_OVERALL0=rowSds(ABS_OVERALL,na.rm=T)
+sd_ABS_STRATUM20=rowSds(ABS_STRATUM2,na.rm=T)
+sd_ABS_STRATUM30=rowSds(ABS_STRATUM3,na.rm=T)
+sd_SD_NET0=rowSds(SD_NET,na.rm=T)
+
+Bia_CAR=mean(Beta_G)-(mu1)
+var_CAR=var(Beta_G)
+
+m_SD_NET0[n]
+#sd_SD_NET0[n]
+m_ABS_OVERALL0[n]
+#sd_ABS_OVERALL0[n]
+m_ABS_MARGIN0[n]
+#sd_ABS_MARGIN0[n]
+m_ABS_STRATUM20[n]
+#sd_ABS_STRATUM20[n]
+m_ABS_STRATUM30[n]
+#sd_ABS_STRATUM30[n]
+
+Bia_CAR #bias
+sqrt(var_CAR) #sd
+Bia_CAR^2+var_CAR #mse
+```

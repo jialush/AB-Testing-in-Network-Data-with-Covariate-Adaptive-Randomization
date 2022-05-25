@@ -1,0 +1,90 @@
+---
+title: "Nips Plot"
+author: "anonymous"
+output: pdf_document
+---
+# library
+```{r}
+library(ggplot2)
+library(ggrepel)
+library(viridis)
+library(readr)
+library(readxl)
+```
+
+# import data
+```{r}
+cluster <- read_excel("hypetheticalData.xlsx", sheet = "cluster2_10")
+non_cluster <- read_excel("hypetheticalData.xlsx", sheet = "noncluster2_10")
+typeof(cluster)
+```
+
+
+# Plot
+```{r}
+n=200
+w=c(0, 1/n^3, 1/n^2, 3/n^2, 5/n^2, 10/n^2, 20/n^2, 1/(2*n), 1/n, 2/n, 1) #2*2
+l_weight=length(w)
+
+non_cluster_22_MSE_old=non_cluster[8,3:(3+l_weight-1)] #[9, 3:(3+l_weight-1)]
+
+non_cluster_22_MSE_new=non_cluster[17,3:(3+l_weight-1)]
+
+cluster_22_MSE_old=cluster[8,3:(3+l_weight-1)]
+
+cluster_22_MSE_new=cluster[17,3:(3+l_weight-1)]
+```
+
+```{r}
+#(mse, network, overall, margi1x, stratum11, CR, new, cluster)
+data=cbind(
+      c(non_cluster_22_MSE_old, non_cluster_22_MSE_new, cluster_22_MSE_old, cluster_22_MSE_new),
+      c(rep("AL/CR in CRG",l_weight),
+        rep("AL*/CR in CRG",l_weight),
+        rep("AL/CR in CUG",l_weight),
+        rep("AL*/CR in CUG",l_weight)))
+data1=as.data.frame(data)
+colnames(data1)<-c('mse', 'category')
+```
+
+```{r}
+#w2=as.factor(w)
+w2=w
+data2=rbind(cbind(data1$mse, "mse", data1$category, w2))
+data2=as.data.frame(data2)
+colnames(data2)<-c('Adaptive', 'measure', 'category','weight')
+data2$weight=factor(unlist(data2$weight), 
+                       labels=c("0", "1/n^3", "1/n^2","3/n^2","5/n^2","10/n^2","20/n^2", "1/2n", "1/n", "2/n", "1"))
+```
+
+```{r}
+data2$Adaptive=as.numeric(data2$Adaptive)
+data2$category=as.factor(unlist(data2$category))
+data2$measure=as.factor(unlist(data2$measure))
+```
+
+```{r}
+CR=c(rep(as.numeric(non_cluster[8,2]),l_weight),
+      rep(as.numeric(non_cluster[17,2]),l_weight),
+      rep(as.numeric(cluster[8,2]),l_weight),
+      rep(as.numeric(cluster[17,2]),l_weight))
+
+line_graph_color<-c("AL/CR in CRG"="#00008B", "AL*/CR in CRG"="#00008B", "AL/CR in CUG"="#F08080", "AL*/CR in CUG"="#F08080")
+method_line_color<-c("AL/CR in CRG"="solid", "AL*/CR in CRG"="longdash", "AL/CR in CUG"="solid", "AL*/CR in CUG"="longdash")
+method_point_color<-c("AL/CR in CRG"=1, "AL*/CR in CRG"=6, "AL/CR in CUG"=1, "AL*/CR in CUG"=6)
+
+
+ggplot(data = data2[data2$measure=='mse', ], mapping = aes(x = weight, y = 1-Adaptive/CR, group=category,color=category)) +
+  geom_point(aes(shape=category))+
+  scale_shape_manual(values=method_point_color)+ #1-AL; 6-AL*
+  geom_line(aes(linetype=category), size=0.5)+
+  scale_linetype_manual(values=method_line_color) + #solid-AL; longdash-AL*
+  scale_color_manual(values=line_graph_color)+ # "#00008B"-CRG; "#F08080"-CUG
+  #ylim(0, 0.8)+
+  scale_y_continuous(limits = c(0.08, 0.8), breaks = seq(0.1, 0.8, by = 0.1))+
+  #ylim(0.25, 1)+
+  labs(x="weight",y="mse reduction")+
+  theme(legend.position = c(0.018,0.01),  legend.justification = c("left", "bottom"), legend.direction="horizontal", panel.background = element_rect(fill = "white", colour = "grey50"),legend.title = element_blank(), legend.text = element_text(colour="black", size=12, face="bold"),axis.title=element_text(size=16,face="bold"))
+
+```
+
